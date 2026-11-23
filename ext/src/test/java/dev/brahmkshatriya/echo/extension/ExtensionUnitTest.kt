@@ -28,8 +28,8 @@ import kotlin.system.measureTimeMillis
 @OptIn(DelicateCoroutinesApi::class)
 @ExperimentalCoroutinesApi
 class ExtensionUnitTest {
-    private val extension: ExtensionClient = TestExtension()
-    private val searchQuery = "Skrillex"
+    private val extension: ExtensionClient = NeptuneExtension()
+    private val searchQuery = "Nothing After You"
     private val user = User("", "Test User")
 
     @Test
