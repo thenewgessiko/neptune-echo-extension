@@ -16,7 +16,9 @@ import java.util.Locale
 
 class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient {
     private val http = OkHttpClient()
-    private val base = "https://thenewgessiko.duckdns.org/flac/"
+    private val root = "https://thenewgessiko.duckdns.org/"
+    private val base = root + "flac/"
+    private fun validUrl(url: String) = Regex("https://thenewgessiko\\.duckdns\\.org/(flac/[A-Z]{2}[A-Z0-9]{3}[0-9]{7}\\.flac|mpeg(320|128)/[A-Z]{2}[A-Z0-9]{3}[0-9]{7}\\.mp3)").matches(url)
     override fun setSettings(settings: Settings) {}
     override suspend fun getSettingItems(): List<Setting> = emptyList()
     override suspend fun onInitialize() {}
@@ -43,12 +45,19 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient {
             val bits = field("bitDepth").toIntOrNull() ?: return@mapNotNull null
             val channels = field("channels").toIntOrNull() ?: return@mapNotNull null
             val artists = listOf(Artist(id = artist, name = artist))
-            val label = "FLAC $bits-bit / ${rate / 1000.0} kHz"
+            val streams = obj["streams"] as? JsonObject
+            val sources = mutableListOf(server("$id-flac", (rate.toLong() * bits * channels / 1000).toInt().coerceAtLeast(321), "FLAC", mapOf("url" to url)))
+            for (bitrate in listOf(320, 128)) {
+                val mp3 = (streams?.get(bitrate.toString()) as? JsonPrimitive)?.contentOrNull
+                if (mp3 == root + "mpeg$bitrate/$id.mp3") {
+                    sources.add(server("$id-$bitrate", bitrate, "${bitrate}kbps", mapOf("url" to mp3)))
+                }
+            }
             Track(id = id, title = title, artists = artists,
                 album = field("album").takeIf { it.isNotBlank() }?.let { Album(id = "$artist:$it", title = it, artists = artists) },
                 duration = field("duration").toLongOrNull(), isrc = id,
                 isPlayable = Track.Playable.Yes, isRadioSupported = false,
-                streamables = listOf(server(id, (rate.toLong() * bits * channels / 1000).toInt(), label, mapOf("url" to url))))
+                streamables = sources)
         }
     }
 
@@ -67,7 +76,7 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient {
 
     override suspend fun loadStreamableMedia(streamable: Streamable, isDownload: Boolean): Streamable.Media {
         val url = streamable.extras["url"] ?: error("Missing Neptune URL")
-        check(url.startsWith(base))
+        check(validUrl(url))
         http.newCall(Request.Builder().url(url).head().build()).await().use {
             check(it.isSuccessful) { "Neptune audio HTTP ${it.code}" }
         }

@@ -17,9 +17,9 @@ jobs:
       - run: chmod +x gradlew && ./gradlew :ext:shadowJar :app:assembleDebug
       - run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/neptune-0.1.0-DEV.1.eapk
-          cp ext/build/libs/*-all.jar artifacts/neptune-0.1.0-DEV.1.jar
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/neptune-0.1.0-DEV.2.eapk
+          cp ext/build/libs/*-all.jar artifacts/neptune-0.1.0-DEV.2.jar
       - uses: actions/upload-artifact@v4
         with:
-          name: Neptune-0.1.0-DEV.1
+          name: Neptune-0.1.0-DEV.2
           path: artifacts/
