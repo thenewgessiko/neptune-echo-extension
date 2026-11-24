@@ -1,7 +1,7 @@
-name: Neptune DEV
+name: Neptune Build
 on:
   push:
-    branches: [dev]
+    branches: [main, dev]
   workflow_dispatch:
 jobs:
   build:
