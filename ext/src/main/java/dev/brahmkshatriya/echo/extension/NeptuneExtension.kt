@@ -44,7 +44,12 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient {
             val rate = field("sampleRate").toIntOrNull() ?: return@mapNotNull null
             val bits = field("bitDepth").toIntOrNull() ?: return@mapNotNull null
             val channels = field("channels").toIntOrNull() ?: return@mapNotNull null
-            val artists = listOf(Artist(id = artist, name = artist))
+            val artists = artist.split(',')
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase(Locale.ROOT) }
+                .map { Artist(id = it, name = it) }
+            if (artists.isEmpty()) return@mapNotNull null
             val streams = obj["streams"] as? JsonObject
             val sources = mutableListOf(server("$id-flac", (rate.toLong() * bits * channels / 1000).toInt().coerceAtLeast(321), "FLAC", mapOf("url" to url)))
             for (bitrate in listOf(320, 128)) {
