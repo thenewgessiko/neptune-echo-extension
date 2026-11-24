@@ -36,7 +36,11 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
                 "the profh3t" -> "The Profh3t"
                 else -> it
             }
-            Artist(id = normalize(name), name = name, isRadioSupported = false)
+            Artist(id = normalize(name), name = name,
+                cover = when (normalize(name)) {
+                    "thenewgessiko", "nayelina" -> (root + "artists/" + normalize(name) + ".jpg").toImageHolder(crop = true)
+                    else -> null
+                }, isRadioSupported = false)
         }.distinctBy { it.id }
     private val mainArtists = artistList("TheNewGessiko,Nayelina")
     private fun ordered(tracks: List<Track>) = tracks.sortedWith(compareBy<Track>(
@@ -44,11 +48,19 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     private fun albums(tracks: List<Track>) = tracks.filter { it.album != null }
         .groupBy { it.album!!.id }.values.map { group ->
             ordered(group).first().album!!.copy(trackCount = group.size.toLong(),
+                type = when (group.size) {
+                    1 -> Album.Type.Single
+                    in 2..5 -> Album.Type.EP
+                    else -> Album.Type.LP
+                },
                 duration = group.sumOf { it.duration ?: 0L })
         }.sortedBy { normalize(it.title) }
     private fun shelves(tracks: List<Track>, artists: List<Artist>, releases: List<Album>): List<Shelf> = buildList {
         if (artists.isNotEmpty()) add(Shelf.Lists.Items("artists", "Artists", artists))
-        if (releases.isNotEmpty()) add(Shelf.Lists.Items("albums", "Albums", releases))
+        for ((type, title) in listOf(Album.Type.Single to "Singles", Album.Type.EP to "EPs", Album.Type.LP to "Albums")) {
+            val items = releases.filter { it.type == type }
+            if (items.isNotEmpty()) add(Shelf.Lists.Items(title.lowercase(Locale.ROOT), title, items))
+        }
         if (tracks.isNotEmpty()) add(Shelf.Lists.Tracks("tracks", "Tracks", tracks))
     }
     override suspend fun loadHomeFeed(): Feed<Shelf> = Feed(emptyList()) {
@@ -58,9 +70,11 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     override suspend fun loadArtist(artist: Artist): Artist =
         (mainArtists + catalog().flatMap { it.artists }).firstOrNull { it.id == artist.id } ?: artist
     override suspend fun loadFeed(artist: Artist): Feed<Shelf> = Feed(emptyList()) {
-        val tracks = catalog().filter { t -> t.artists.any { it.id == artist.id } ||
+        val all = catalog()
+        val tracks = all.filter { t -> t.artists.any { it.id == artist.id } ||
             t.album?.artists?.any { it.id == artist.id } == true }
-        shelves(tracks, emptyList(), albums(tracks)).toFeedData()
+        val ids = tracks.mapNotNull { it.album?.id }.toSet()
+        shelves(tracks, emptyList(), albums(all).filter { it.id in ids }).toFeedData()
     }
     override suspend fun loadAlbum(album: Album): Album = albums(catalog()).firstOrNull { it.id == album.id }
         ?: error("Album unavailable on Neptune")
@@ -75,7 +89,7 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
             check(response.isSuccessful) { "Neptune catalog HTTP ${response.code}" }
             response.body?.string() ?: error("Empty catalog")
         }
-        return Json.parseToJsonElement(body).jsonArray.mapNotNull { item ->
+        val tracks = Json.parseToJsonElement(body).jsonArray.mapNotNull { item ->
             val obj = item.jsonObject
             fun field(key: String) = obj[key]?.jsonPrimitive?.contentOrNull.orEmpty()
             val id = field("isrc")
@@ -112,10 +126,12 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
                 isPlayable = Track.Playable.Yes, isRadioSupported = false,
                 streamables = sources)
         }
+        val releases = albums(tracks).associateBy { it.id }
+        return tracks.map { it.copy(album = it.album?.let { a -> releases[a.id] ?: a }) }
     }
 
     override suspend fun loadSearchFeed(query: String): Feed<Shelf> = Feed(listOf(
-        Tab("TRACKS", "Tracks"), Tab("ALL", "All"), Tab("ALBUMS", "Albums"), Tab("ARTISTS", "Artists")
+        Tab("TRACKS", "Tracks"), Tab("ALL", "All"), Tab("SINGLES", "Singles"), Tab("EPS", "EPs"), Tab("ALBUMS", "Albums"), Tab("ARTISTS", "Artists")
     )) { tab ->
         val terms = normalize(query).split(' ').filter { it.isNotBlank() }
         fun matches(value: String) = terms.isNotEmpty() && terms.all { it in normalize(value) }
@@ -125,7 +141,9 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
         val artists = mainArtists.filter { matches(it.name) }
         when (tab?.id) {
             "ALL" -> shelves(tracks, artists, releases)
-            "ALBUMS" -> shelves(emptyList(), emptyList(), releases)
+            "SINGLES" -> shelves(emptyList(), emptyList(), releases.filter { it.type == Album.Type.Single })
+            "EPS" -> shelves(emptyList(), emptyList(), releases.filter { it.type == Album.Type.EP })
+            "ALBUMS" -> shelves(emptyList(), emptyList(), releases.filter { it.type == Album.Type.LP })
             "ARTISTS" -> shelves(emptyList(), artists, emptyList())
             else -> shelves(tracks, emptyList(), emptyList())
         }.toFeedData()

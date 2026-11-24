@@ -15,11 +15,18 @@ jobs:
           distribution: zulu
           java-version: '17'
       - run: chmod +x gradlew && ./gradlew :ext:shadowJar :app:assembleDebug
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION=$(sed -n 's/^val verName = "\([^"]*\)"$/\1/p' ext/build.gradle.kts)
+          APP_VERSION=$(sed -n 's/^val verName = "\([^"]*\)"$/\1/p' app/build.gradle.kts)
+          test -n "$VERSION" && test "$VERSION" = "$APP_VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/neptune-0.1.0-DEV.3.eapk
-          cp ext/build/libs/*-all.jar artifacts/neptune-0.1.0-DEV.3.jar
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/neptune-${{ steps.version.outputs.version }}.eapk
+          cp ext/build/libs/*-all.jar artifacts/neptune-${{ steps.version.outputs.version }}.jar
       - uses: actions/upload-artifact@v4
         with:
-          name: Neptune-0.1.0-DEV.3
+          name: Neptune-${{ steps.version.outputs.version }}
           path: artifacts/
