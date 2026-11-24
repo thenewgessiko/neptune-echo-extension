@@ -26,8 +26,8 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     private fun previewsEnabled() = preferences?.getBoolean("show_previews") == true
     override fun setSettings(settings: Settings) { preferences = settings }
     override suspend fun getSettingItems(): List<Setting> = listOf(
-        SettingSwitch(title = "Attiva Prossime Release / Spoiler", key = "show_previews",
-            summary = "Mostra e riproduci Upcoming Releases e Spoilers", defaultValue = false)
+        SettingSwitch(title = "Enable Upcoming Releases / Spoilers", key = "show_previews",
+            summary = "Show and play upcoming releases and spoilers", defaultValue = false)
     )
     private fun previewUrl(url: String) = Regex(root.replace(".", "\\.") +
         "(upcoming|spoilers)/([a-z0-9-]+\\.flac|mpeg(320|128)/[a-z0-9-]+\\.mp3)").matches(url)
