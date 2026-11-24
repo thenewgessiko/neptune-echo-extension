@@ -8,6 +8,8 @@ import dev.brahmkshatriya.echo.common.models.Streamable.Companion.server
 import dev.brahmkshatriya.echo.common.models.Streamable.Media.Companion.toServerMedia
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
+import dev.brahmkshatriya.echo.common.settings.SettingSwitch
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import dev.brahmkshatriya.echo.common.models.ImageHolder.Companion.toImageHolder
 import okhttp3.OkHttpClient
@@ -20,8 +22,34 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     private val root = "https://thenewgessiko.duckdns.org/"
     private val base = root + "flac/"
     private fun validUrl(url: String) = Regex("https://thenewgessiko\\.duckdns\\.org/(flac/[A-Z]{2}[A-Z0-9]{3}[0-9]{7}\\.flac|mpeg(320|128)/[A-Z]{2}[A-Z0-9]{3}[0-9]{7}\\.mp3)").matches(url)
-    override fun setSettings(settings: Settings) {}
-    override suspend fun getSettingItems(): List<Setting> = emptyList()
+    private var preferences: Settings? = null
+    private fun previewsEnabled() = preferences?.getBoolean("show_previews") == true
+    override fun setSettings(settings: Settings) { preferences = settings }
+    override suspend fun getSettingItems(): List<Setting> = listOf(
+        SettingSwitch(title = "Attiva Prossime Release / Spoiler", key = "show_previews",
+            summary = "Mostra e riproduci Upcoming Releases e Spoilers", defaultValue = false)
+    )
+    private fun previewUrl(url: String) = Regex(root.replace(".", "\\.") +
+        "(upcoming|spoilers)/([a-z0-9-]+\\.flac|mpeg(320|128)/[a-z0-9-]+\\.mp3)").matches(url)
+    private fun previewId(id: String) = id.startsWith("upcoming-") || id.startsWith("spoilers-")
+    private suspend fun previewTracks(category: String): List<Track> {
+        if (!previewsEnabled()) return emptyList()
+        return try { catalog(category) } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { emptyList() }
+    }
+    private suspend fun allTracks() = catalog() + previewTracks("upcoming") + previewTracks("spoilers")
+    private suspend fun previewShelves(artistId: String? = null): List<Shelf> = buildList {
+        for ((category, prefix) in listOf("upcoming" to "Upcoming", "spoilers" to "Spoiler")) {
+            val all = previewTracks(category)
+            val ids = all.filter { t -> artistId == null || t.artists.any { it.id == artistId } ||
+                t.album?.artists?.any { it.id == artistId } == true }.mapNotNull { it.album?.id }.toSet()
+            val releases = albums(all).filter { it.id in ids }
+            for ((type, label) in listOf(Album.Type.Single to "Singles", Album.Type.EP to "EPs", Album.Type.LP to "Albums")) {
+                val items = releases.filter { it.type == type }
+                if (items.isNotEmpty()) add(Shelf.Lists.Items("$category-$label", "$prefix $label", items))
+            }
+        }
+    }
     override suspend fun onInitialize() {}
 
     private fun normalize(s: String) = Normalizer.normalize(s, Normalizer.Form.NFKD)
@@ -65,7 +93,7 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     }
     override suspend fun loadHomeFeed(): Feed<Shelf> = Feed(emptyList()) {
         val tracks = catalog()
-        shelves(tracks, mainArtists, albums(tracks)).toFeedData()
+        (shelves(tracks, mainArtists, albums(tracks)) + previewShelves()).toFeedData()
     }
     override suspend fun loadArtist(artist: Artist): Artist =
         (mainArtists + catalog().flatMap { it.artists }).firstOrNull { it.id == artist.id } ?: artist
@@ -74,16 +102,18 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
         val tracks = all.filter { t -> t.artists.any { it.id == artist.id } ||
             t.album?.artists?.any { it.id == artist.id } == true }
         val ids = tracks.mapNotNull { it.album?.id }.toSet()
-        shelves(tracks, emptyList(), albums(all).filter { it.id in ids }).toFeedData()
+        (shelves(tracks, emptyList(), albums(all).filter { it.id in ids }) + previewShelves(artist.id)).toFeedData()
     }
-    override suspend fun loadAlbum(album: Album): Album = albums(catalog()).firstOrNull { it.id == album.id }
+    override suspend fun loadAlbum(album: Album): Album = albums(if (previewId(album.id)) allTracks() else catalog()).firstOrNull { it.id == album.id }
         ?: error("Album unavailable on Neptune")
     override suspend fun loadTracks(album: Album): Feed<Track> = Feed(emptyList()) {
-        ordered(catalog().filter { it.album?.id == album.id }).toFeedData()
+        ordered((if (previewId(album.id)) allTracks() else catalog()).filter { it.album?.id == album.id }).toFeedData()
     }
     override suspend fun loadFeed(album: Album): Feed<Shelf>? = null
 
-    private suspend fun catalog(): List<Track> {
+    private suspend fun catalog(category: String = "flac"): List<Track> {
+        val official = category == "flac"
+        val base = root + category + "/"
         val request = Request.Builder().url(base + "catalog.json").header("Cache-Control", "no-cache").build()
         val body = http.newCall(request).await().use { response ->
             check(response.isSuccessful) { "Neptune catalog HTTP ${response.code}" }
@@ -92,11 +122,19 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
         val tracks = Json.parseToJsonElement(body).jsonArray.mapNotNull { item ->
             val obj = item.jsonObject
             fun field(key: String) = obj[key]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val id = field("isrc")
+            val id = field(if (official) "isrc" else "id")
             val title = field("title")
             val artist = field("artist")
             val url = field("url")
-            if (!id.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) || title.isBlank() || artist.isBlank() || !url.equals(base + id + ".flac", ignoreCase = false)) return@mapNotNull null
+            if (title.isBlank() || artist.isBlank()) return@mapNotNull null
+            if (official) {
+                if (!id.matches(Regex("[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")) || url != base + id + ".flac") return@mapNotNull null
+            } else {
+                if (!id.matches(Regex("$category-[a-f0-9]{64}")) ||
+                    !field("releaseId").matches(Regex("$category-[a-f0-9]{64}")) ||
+                    field("category") != category || field("playable") != "true" ||
+                    !previewUrl(url) || !url.startsWith(base) || !url.endsWith(".flac")) return@mapNotNull null
+            }
             val rate = field("sampleRate").toIntOrNull() ?: return@mapNotNull null
             val bits = field("bitDepth").toIntOrNull() ?: return@mapNotNull null
             val channels = field("channels").toIntOrNull() ?: return@mapNotNull null
@@ -110,19 +148,20 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
             val sources = mutableListOf(server("$id-flac", (rate.toLong() * bits * channels / 1000).toInt().coerceAtLeast(321), "FLAC", mapOf("url" to url)))
             for (bitrate in listOf(320, 128)) {
                 val mp3 = (streams?.get(bitrate.toString()) as? JsonPrimitive)?.contentOrNull
-                if (mp3 == root + "mpeg$bitrate/$id.mp3") {
+                if (mp3 == (if (official) root + "mpeg$bitrate/$id.mp3" else
+                    base + "mpeg$bitrate/" + url.substringAfterLast('/').removeSuffix(".flac") + ".mp3")) {
                     sources.add(server("$id-$bitrate", bitrate, "${bitrate}kbps", mapOf("url" to mp3)))
                 }
             }
             Track(id = id, title = title, artists = artists,
                 cover = artwork,
                 album = field("album").takeIf { it.isNotBlank() }?.let {
-                    Album(id = albumArtists.map { a -> a.id }.sorted().joinToString(",") + ":" + normalize(it),
+                    Album(id = if (official) albumArtists.map { a -> a.id }.sorted().joinToString(",") + ":" + normalize(it) else field("releaseId"),
                         title = it, artists = albumArtists, cover = artwork, isRadioSupported = false)
                 },
                 albumOrderNumber = field("trackNumber").toLongOrNull()?.takeIf { it > 0 },
                 albumDiscNumber = field("discNumber").toLongOrNull()?.takeIf { it > 0 },
-                duration = field("duration").toLongOrNull(), isrc = id,
+                duration = field("duration").toLongOrNull(), isrc = if (official) id else null,
                 isPlayable = Track.Playable.Yes, isRadioSupported = false,
                 streamables = sources)
         }
@@ -150,11 +189,11 @@ class NeptuneExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFee
     }
 
     override suspend fun loadTrack(track: Track, isDownload: Boolean): Track =
-        catalog().firstOrNull { it.id == track.id } ?: error("Track unavailable on Neptune")
+        (if (previewId(track.id)) allTracks() else catalog()).firstOrNull { it.id == track.id } ?: error("Track unavailable on Neptune")
 
     override suspend fun loadStreamableMedia(streamable: Streamable, isDownload: Boolean): Streamable.Media {
         val url = streamable.extras["url"] ?: error("Missing Neptune URL")
-        check(validUrl(url))
+        check(validUrl(url) || (previewsEnabled() && previewUrl(url)))
         http.newCall(Request.Builder().url(url).head().build()).await().use {
             check(it.isSuccessful) { "Neptune audio HTTP ${it.code}" }
         }
