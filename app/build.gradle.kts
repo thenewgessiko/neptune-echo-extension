@@ -35,7 +35,7 @@ val extUpdateUrl: String? by project
 val gitHash = execute("git", "rev-parse", "HEAD").take(7)
 val gitCount = execute("git", "rev-list", "--count", "HEAD").toInt()
 val verCode = gitCount
-val verName = "0.1.0-DEV.3"
+val verName = "0.1.0-DEV.4"
 
 
 val outputDir = file("${layout.buildDirectory.asFile.get()}/generated/proguard")
